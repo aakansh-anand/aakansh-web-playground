@@ -2,6 +2,7 @@ import type { ComponentType } from "react";
 import Link from "next/link";
 import { LOGO_ANIMATIONS, type LogoAnimationMeta } from "./animations";
 import type { LogoSampleProps } from "./logo-samples";
+import SpeedControls from "./speed-controls";
 
 type AnimationPageProps = {
   id: LogoAnimationMeta["id"];
@@ -43,6 +44,8 @@ const AnimationPage = ({ id, Sample }: AnimationPageProps) => {
         <div className="flex w-full items-center justify-center rounded-3xl bg-white py-16 shadow-sm">
           <Sample className="h-44 w-auto" />
         </div>
+
+        <SpeedControls />
 
         <div className="space-y-3 text-center">
           <h1 className="text-3xl font-extrabold tracking-tight text-neutral-900">

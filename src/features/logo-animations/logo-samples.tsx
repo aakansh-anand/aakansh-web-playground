@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, type ReactNode } from "react";
+import { useEffect, useRef, type ReactNode } from "react";
 import {
   animate,
   easeInOut,
@@ -8,7 +8,8 @@ import {
   useMotionValue,
   useReducedMotion,
   useTransform,
-  type Transition,
+  type AnimationPlaybackControls,
+  type Easing,
 } from "motion/react";
 import LogoIcon from "@/components/ui/logo-icon";
 import {
@@ -19,6 +20,7 @@ import {
   LOGO_STROKE_WIDTH,
   LOGO_VIEW_BOX,
 } from "@/components/ui/logo-icon-paths";
+import { useLogoSpeed } from "./speed-context";
 
 export type LogoSampleProps = {
   className?: string;
@@ -43,7 +45,64 @@ const LogoSvg = ({
   </svg>
 );
 
-const forever = { repeat: Infinity } as const satisfies Transition;
+/* -------------------------------------------------------------------------- */
+/* useLoopProgress — one looping 0 to 1 value that every sample is driven by   */
+/* -------------------------------------------------------------------------- */
+
+type LoopOptions = {
+  /** Seconds for one pass at 1x speed. */
+  duration: number;
+  /** Seconds before the very first pass starts, at 1x speed. */
+  delay?: number;
+  /** Seconds to rest between passes, at 1x speed. */
+  repeatDelay?: number;
+  /** "reverse" plays every other pass backwards: the yoyo. */
+  repeatType?: "loop" | "reverse";
+  ease?: Easing;
+};
+
+/**
+ * Every sample reads its motion from this value rather than from `animate`
+ * props. That keeps the playback speed live: changing it only sets `speed` on
+ * the running animation, so the loop carries on from where it was instead of
+ * restarting, and every delay and rest scales along with it.
+ */
+const useLoopProgress = ({
+  duration,
+  delay = 0,
+  repeatDelay = 0,
+  repeatType = "loop",
+  ease = "linear",
+}: LoopOptions) => {
+  const { speed } = useLogoSpeed();
+  const progress = useMotionValue(0);
+  const controlsRef = useRef<AnimationPlaybackControls | null>(null);
+  const speedRef = useRef(speed);
+
+  useEffect(() => {
+    speedRef.current = speed;
+    if (controlsRef.current) controlsRef.current.speed = speed;
+  }, [speed]);
+
+  useEffect(() => {
+    const controls = animate(progress, [0, 1], {
+      duration,
+      delay,
+      repeatDelay,
+      repeatType,
+      ease,
+      repeat: Infinity,
+    });
+    controls.speed = speedRef.current;
+    controlsRef.current = controls;
+    return () => {
+      controls.stop();
+      controlsRef.current = null;
+    };
+  }, [progress, duration, delay, repeatDelay, repeatType, ease]);
+
+  return progress;
+};
 
 /* -------------------------------------------------------------------------- */
 /* KeyframePath — a stroke driven by one looping progress value                */
@@ -60,7 +119,7 @@ const forever = { repeat: Infinity } as const satisfies Transition;
  * Because it is driven by motion values (not an animate prop) the path also
  * server-renders in its invisible start state, with no first-paint flash.
  */
-const GROW = 0.06;
+const GROW = 0.14;
 
 type Timeline = {
   /** Progress stops, 0 to 1, strictly increasing. */
@@ -70,22 +129,6 @@ type Timeline = {
   /** Full stroke width at each stop (before the grow-from-nothing taper). */
   weight?: number[];
   stroke?: string[];
-};
-
-const useLoopProgress = (duration: number, delay: number) => {
-  const progress = useMotionValue(0);
-
-  useEffect(() => {
-    const controls = animate(progress, [0, 1], {
-      ...forever,
-      duration,
-      delay,
-      ease: "linear",
-    });
-    return () => controls.stop();
-  }, [progress, duration, delay]);
-
-  return progress;
 };
 
 const KeyframePath = ({
@@ -104,7 +147,7 @@ const KeyframePath = ({
   const { times } = timeline;
   const constant = <T,>(value: T) => times.map(() => value);
 
-  const progress = useLoopProgress(duration, delay);
+  const progress = useLoopProgress({ duration, delay });
   const options = { ease: easeInOut };
 
   const pathLength = useTransform(progress, times, timeline.pathLength, options);
@@ -175,35 +218,48 @@ export const TraceLogo = ({ className }: LogoSampleProps) => {
 /* 2. Yoyo — the strokes see-saw: one grows while the other shrinks, reversing */
 /* -------------------------------------------------------------------------- */
 
+// The strokes never shrink below MIN, so there is no zero-length circle to hide.
+const YOYO_MIN = 0.12;
+
+const YoyoPath = ({
+  d,
+  color,
+  from,
+  to,
+}: {
+  d: string;
+  color: string;
+  from: number;
+  to: number;
+}) => {
+  // `repeatType: "reverse"` is the yoyo: every other pass plays backwards.
+  const progress = useLoopProgress({
+    duration: 1.4,
+    ease: "easeInOut",
+    repeatType: "reverse",
+  });
+  const pathLength = useTransform(progress, [0, 1], [from, to]);
+
+  return <motion.path d={d} stroke={color} style={{ pathLength }} />;
+};
+
 export const YoyoLogo = ({ className }: LogoSampleProps) => {
   const reduceMotion = useReducedMotion();
   if (reduceMotion) return <LogoIcon className={className} />;
 
-  // `repeatType: "reverse"` is the yoyo: each cycle plays backwards. The
-  // strokes never shrink below MIN, so there is no zero-length circle to hide.
-  const yoyo: Transition = {
-    ...forever,
-    repeatType: "reverse",
-    duration: 1.4,
-    ease: "easeInOut",
-  };
-  const MIN = 0.12;
-
   return (
     <LogoSvg className={className}>
-      <motion.path
+      <YoyoPath
         d={LOGO_NAVY_PATH}
-        stroke={LOGO_NAVY_COLOR}
-        initial={{ pathLength: MIN }}
-        animate={{ pathLength: 1 }}
-        transition={yoyo}
+        color={LOGO_NAVY_COLOR}
+        from={YOYO_MIN}
+        to={1}
       />
-      <motion.path
+      <YoyoPath
         d={LOGO_GOLD_PATH}
-        stroke={LOGO_GOLD_COLOR}
-        initial={{ pathLength: 1 }}
-        animate={{ pathLength: MIN }}
-        transition={yoyo}
+        color={LOGO_GOLD_COLOR}
+        from={1}
+        to={YOYO_MIN}
       />
     </LogoSvg>
   );
@@ -213,25 +269,50 @@ export const YoyoLogo = ({ className }: LogoSampleProps) => {
 /* 3. Comet — a short dash races along a faint track of the full logo          */
 /* -------------------------------------------------------------------------- */
 
+// With pathLength normalised to 1, a dash pattern of `dash 2` shows exactly
+// one dash on the path (the gap is longer than the path itself). Sliding the
+// offset from `dash + MARGIN` to `-(1 + MARGIN)` carries it from fully before
+// the start to fully past the end. MARGIN covers the round caps, which would
+// otherwise leave a dot at either end of the path.
+const COMET_MARGIN = 0.15;
+
+const CometPath = ({
+  d,
+  color,
+  dash,
+  delay = 0,
+}: {
+  d: string;
+  color: string;
+  dash: number;
+  delay?: number;
+}) => {
+  const progress = useLoopProgress({
+    duration: 1.8,
+    delay,
+    repeatDelay: 0.15,
+    ease: [0.5, 0, 0.5, 1],
+  });
+  const strokeDashoffset = useTransform(
+    progress,
+    [0, 1],
+    [dash + COMET_MARGIN, -(1 + COMET_MARGIN)],
+  );
+
+  return (
+    <motion.path
+      d={d}
+      stroke={color}
+      pathLength={1}
+      strokeDasharray={`${dash} 2`}
+      style={{ strokeDashoffset }}
+    />
+  );
+};
+
 export const CometLogo = ({ className }: LogoSampleProps) => {
   const reduceMotion = useReducedMotion();
   if (reduceMotion) return <LogoIcon className={className} />;
-
-  // With pathLength normalised to 1, a dash pattern of `dash 2` shows exactly
-  // one dash on the path (the gap is longer than the path itself). Sliding the
-  // offset from `dash + MARGIN` to `-(1 + MARGIN)` carries it from fully before
-  // the start to fully past the end. MARGIN covers the round caps, which would
-  // otherwise leave a dot at either end of the path.
-  const MARGIN = 0.15;
-  const navyDash = 0.3;
-  const goldDash = 0.38;
-
-  const transition: Transition = {
-    ...forever,
-    duration: 1.8,
-    ease: [0.5, 0, 0.5, 1],
-    repeatDelay: 0.15,
-  };
 
   return (
     <LogoSvg className={className}>
@@ -245,23 +326,12 @@ export const CometLogo = ({ className }: LogoSampleProps) => {
         stroke={LOGO_GOLD_COLOR}
         strokeOpacity={0.2}
       />
-      <motion.path
-        d={LOGO_NAVY_PATH}
-        stroke={LOGO_NAVY_COLOR}
-        pathLength={1}
-        strokeDasharray={`${navyDash} 2`}
-        initial={{ strokeDashoffset: navyDash + MARGIN }}
-        animate={{ strokeDashoffset: -(1 + MARGIN) }}
-        transition={transition}
-      />
-      <motion.path
+      <CometPath d={LOGO_NAVY_PATH} color={LOGO_NAVY_COLOR} dash={0.3} />
+      <CometPath
         d={LOGO_GOLD_PATH}
-        stroke={LOGO_GOLD_COLOR}
-        pathLength={1}
-        strokeDasharray={`${goldDash} 2`}
-        initial={{ strokeDashoffset: goldDash + MARGIN }}
-        animate={{ strokeDashoffset: -(1 + MARGIN) }}
-        transition={{ ...transition, delay: 0.2 }}
+        color={LOGO_GOLD_COLOR}
+        dash={0.38}
+        delay={0.2}
       />
     </LogoSvg>
   );
